@@ -1,8 +1,8 @@
 #!/bin/bash
-# IPTV 管理系统一键安装脚本
-# 用法:
-#   curl -fsSL https://raw.githubusercontent.com/judy-gotv/Rust-IPTV-dist/main/install.sh | sudo bash
-#   或下载后: sudo bash install.sh [--update] [--uninstall] [--purge]
+# IPTV 管理系统一键安装脚本 v0.0.1
+# 交互菜单: sudo bash install.sh
+# 一键安装: curl -fsSL https://raw.githubusercontent.com/judy-gotv/Rust-IPTV-dist/main/install.sh | sudo bash
+# 非交互:   sudo bash install.sh --update | --uninstall [--purge]
 #
 # 环境变量(可选):
 #   REPO=owner/repo      GitHub 仓库(默认 judy-gotv/Rust-IPTV-dist)
@@ -36,7 +36,7 @@ detect_arch() {
   esac
 }
 
-# $1=文件名 → 下载到 $2
+# $1=文件名 → 下载到 $2 (失败返回 1)
 dl() {
   local name="$1" dest="$2" url
   if [ "$TAG" = "latest" ]; then
@@ -56,6 +56,18 @@ rand_secret() {
   fi
 }
 
+# 是否有可用的交互终端(只检测存在不够,必须能真正打开)
+has_tty() { [ -c /dev/tty ] && ( : < /dev/tty ) 2>/dev/null; }
+
+# 从终端读取输入,兼容 "curl ... | sudo bash" 的管道用法
+tty_read() {
+  if has_tty; then
+    read "$@" < /dev/tty
+  else
+    read "$@"
+  fi
+}
+
 do_install() {
   need_root
   command -v curl >/dev/null 2>&1 || die "缺少 curl，请先安装"
@@ -66,7 +78,6 @@ do_install() {
   local bin_tmp="$INSTALL_DIR/${BIN_NAME}.new"
   dl "iptv-rs-linux-${arch}" "$bin_tmp" || die "下载失败: https://github.com/${REPO}/releases"
   chmod +x "$bin_tmp"
-  # file 简单校验:必须是 ELF
   head -c 4 "$bin_tmp" | grep -q $'\x7fELF' || die "下载的文件不是有效的 ELF 二进制"
   mv -f "$bin_tmp" "$INSTALL_DIR/$BIN_NAME"
   log "二进制已安装: $INSTALL_DIR/$BIN_NAME (前端已打包在二进制内,单文件运行)"
@@ -78,24 +89,26 @@ do_install() {
     . "$env_file" 2>/dev/null || true
     log "检测到已有配置，将沿用(直接回车保持原值)"
   fi
-  read -rp "监听端口 [${PORT:-8080}]: " port;            port="${port:-${PORT:-8080}}"
-  read -rp "管理员用户名 [${ADMIN_USER:-admin}]: " admin_user; admin_user="${admin_user:-${ADMIN_USER:-admin}}"
+  tty_read -rp "监听端口 [${PORT:-8080}]: " port || port=""
+  port="${port:-${PORT:-8080}}"
+  tty_read -rp "管理员用户名 [${ADMIN_USER:-admin}]: " admin_user || admin_user=""
+  admin_user="${admin_user:-${ADMIN_USER:-admin}}"
   while true; do
-    read -rsp "管理员密码${ADMIN_PASS:+ [回车保持不变]}: " admin_pass; echo
+    tty_read -rp "管理员密码${ADMIN_PASS:+ [回车保持不变]}(明文显示): " admin_pass || admin_pass=""
     if [ -z "$admin_pass" ] && [ -n "${ADMIN_PASS:-}" ]; then admin_pass="$ADMIN_PASS"; break; fi
     [ "${#admin_pass}" -ge 6 ] && break
     warn "密码至少 6 位"
   done
-  local def_url="http://${PUBLIC_URL:-}:$port"
+  local def_url
   if [ -z "${PUBLIC_URL:-}" ]; then
-    # 尝试自动获取本机公网 IP
     local pip
     pip="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || true)"
     def_url="http://${pip:-服务器IP}:$port"
   else
     def_url="$PUBLIC_URL"
   fi
-  read -rp "对外访问地址 [$def_url]: " public_url; public_url="${public_url:-$def_url}"
+  tty_read -rp "对外访问地址 [$def_url]: " public_url || public_url=""
+  public_url="${public_url:-$def_url}"
   secret="${SESSION_SECRET:-$(rand_secret)}"
 
   cat > "$env_file" <<EOF
@@ -139,17 +152,19 @@ EOF
   fi
 
   echo
-  log "安装完成!"
-  echo "  管理后台: $public_url  (用户名: $admin_user)"
+  log "安装完成!请妥善保存以下信息:"
+  echo "  管理后台: $public_url"
+  echo "  管理员账号: $admin_user"
+  echo "  管理员密码: $admin_pass"
   echo "  数据目录: $INSTALL_DIR/data/  (SQLite，备份拷走 iptv.db 即可)"
   echo "  查看日志: journalctl -u $SERVICE_NAME -f"
-  echo "  更新版本: sudo bash $0 --update"
+  echo "  再次运行 sudo bash $0 可打开管理菜单(在线升级/卸载)"
 }
 
 do_update() {
   need_root
   local arch; arch="$(detect_arch)"
-  log "更新二进制(架构 $arch)..."
+  log "在线升级:检查最新版(架构 $arch)..."
   local bin_tmp="$INSTALL_DIR/${BIN_NAME}.new"
   dl "iptv-rs-linux-${arch}" "$bin_tmp" || die "下载失败: https://github.com/${REPO}/releases"
   chmod +x "$bin_tmp"
@@ -157,11 +172,12 @@ do_update() {
   mv -f "$bin_tmp" "$INSTALL_DIR/$BIN_NAME"
   if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     systemctl restart "$SERVICE_NAME"
-    log "服务已重启"
+    sleep 2
+    systemctl is-active "$SERVICE_NAME" >/dev/null && log "服务已重启并运行中" || warn "服务重启后未处于运行状态，请检查日志"
   else
     warn "请手动重启服务"
   fi
-  log "更新完成"
+  log "升级完成"
 }
 
 do_uninstall() {
@@ -173,16 +189,58 @@ do_uninstall() {
   fi
   if [ "${1:-}" = "--purge" ]; then
     rm -rf "$INSTALL_DIR"
-    log "已删除服务并清空 $INSTALL_DIR(含数据库)"
+    log "已卸载并清空 $INSTALL_DIR(含数据库)"
   else
-    # 保留 data/ 与 env
-    find "$INSTALL_DIR" -maxdepth 1 ! -name data ! -name env ! -path "$INSTALL_DIR" -exec rm -rf {} +
-    log "已卸载，数据库与配置保留在 $INSTALL_DIR (彻底删除加 --purge)"
+    find "$INSTALL_DIR" -maxdepth 1 ! -name data ! -name env ! -path "$INSTALL_DIR" -exec rm -rf {} + 2>/dev/null || true
+    log "已卸载，数据库与配置保留在 $INSTALL_DIR (清空加 --purge)"
   fi
 }
 
+show_menu() {
+  need_root
+  while true; do
+    echo
+    echo "=================================="
+    echo "   IPTV 管理系统 v0.0.1"
+    echo "=================================="
+    echo "   1) 安装 / 重新安装"
+    echo "   2) 在线升级到最新版"
+    echo "   3) 卸载 (保留数据库和配置)"
+    echo "   4) 卸载并清空 (删除 $INSTALL_DIR，含数据库)"
+    echo "   0) 退出"
+    echo "=================================="
+    local choice
+    tty_read -rp "请选择 [1]: " choice || choice=""
+    choice="${choice:-1}"
+    case "$choice" in
+      1) do_install; break ;;
+      2) do_update; break ;;
+      3) do_uninstall; break ;;
+      4)
+        local yn
+        tty_read -rp "将删除 $INSTALL_DIR 下全部数据(含数据库)，确认吗? [y/N]: " yn || yn=""
+        if [[ "$yn" =~ ^[Yy]$ ]]; then
+          do_uninstall --purge
+        else
+          log "已取消"
+        fi
+        break ;;
+      0) exit 0 ;;
+      *) warn "无效选项: $choice" ;;
+    esac
+  done
+}
+
 case "${1:-}" in
-  --update)   do_update ;;
-  --uninstall) do_uninstall "${2:-}" ;;
-  *)          do_install ;;
+  --update)            do_update ;;
+  --uninstall)         do_uninstall "${2:-}" ;;
+  --menu)              show_menu ;;
+  "")
+    if has_tty; then
+      show_menu
+    else
+      do_install   # 无可用终端时默认直接安装
+    fi
+    ;;
+  *) die "未知参数: $1 (可用: --update, --uninstall [--purge], --menu)" ;;
 esac
