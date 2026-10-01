@@ -1,3 +1,14 @@
+
+```
+curl -fsSL https://raw.githubusercontent.com/judy-gotv/Rust-IPTV-dist/refs/heads/main/install.sh | sudo bash
+```
+或者
+```
+curl -fsSL -o install.sh https://raw.githubusercontent.com/judy-gotv/Rust-IPTV-dist/refs/heads/main/install.sh
+sudo bash install.sh
+```
+
+
 # IPTV 管理系统 · 使用说明
 
 多上游（M3U / Xtream Codes / Stalker Portal）聚合、自动检测择优、订阅分发、
