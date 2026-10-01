@@ -1,3 +1,4 @@
+# 一键安装脚本
 
 ```
 curl -fsSL https://raw.githubusercontent.com/judy-gotv/Rust-IPTV-dist/refs/heads/main/install.sh | sudo bash
